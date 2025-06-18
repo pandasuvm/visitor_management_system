@@ -1,0 +1,36 @@
+services:
+  # Backend API service
+  - type: web
+    name: visitor-management-api
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node backend/server.js
+    healthCheckPath: /api/flats
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000  # Render assigns its own port
+      - key: ADMIN_USERNAME
+        value: panchadmin
+      - key: ADMIN_PASSWORD
+        value: admin@1234
+    disk:
+      name: data
+      mountPath: /opt/render/project/data
+      sizeGB: 1  # Free tier limit
+
+  # Frontend static site (Optional)
+  - type: web
+    name: visitor-management-frontend
+    env: static
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./dist
+    pullRequestPreviewsEnabled: false
+    envVars:
+      - key: VITE_API_URL
+        fromService:
+          name: visitor-management-api
+          type: web
+          envVarKey: RENDER_EXTERNAL_URL

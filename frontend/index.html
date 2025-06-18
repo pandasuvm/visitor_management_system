@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Visitor Check-In | Panchsheel Enclave</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="styles/main.css">
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <header class="text-center mb-8">
+            <h1 class="text-3xl font-bold text-green-700">Panchsheel Enclave</h1>
+            <p class="text-lg text-gray-600">Visitor Management System</p>
+        </header>
+
+        <div class="bg-white rounded-lg shadow-lg p-6 max-w-md mx-auto">
+            <h2 class="text-xl font-semibold mb-6 text-center">Visitor Check-In Form</h2>
+
+            <form id="visitorForm" class="space-y-4">
+                <div>
+                    <label for="visitorName" class="block text-sm font-medium text-gray-700">Full Name</label>
+                    <input type="text" id="visitorName" name="visitorName" required
+                        class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-green-500 focus:border-green-500">
+                </div>
+
+                <div>
+                    <label for="visitorPhone" class="block text-sm font-medium text-gray-700">Phone Number</label>
+                    <input type="tel" id="visitorPhone" name="visitorPhone" required
+                        class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-green-500 focus:border-green-500">
+                </div>
+
+                <div>
+                    <label for="flatNumber" class="block text-sm font-medium text-gray-700">Flat Number</label>
+                    <select id="flatNumber" name="flatNumber" required
+                        class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-green-500 focus:border-green-500">
+                        <option value="">Select a flat</option>
+                        <!-- Flats will be populated dynamically from backend -->
+                    </select>
+                </div>
+
+                <div>
+                    <label for="purpose" class="block text-sm font-medium text-gray-700">Purpose of Visit</label>
+                    <input type="text" id="purpose" name="purpose" required
+                        class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-green-500 focus:border-green-500">
+                </div>
+
+                <div class="pt-2">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Take Selfie</label>
+                    <div class="flex flex-col items-center">
+                        <div id="cameraContainer" class="w-full h-48 bg-gray-200 mb-2 rounded-lg overflow-hidden relative">
+                            <video id="camera" class="w-full h-full object-cover" autoplay></video>
+                            <canvas id="photoCanvas" class="hidden w-full h-full"></canvas>
+                        </div>
+                        <div class="flex space-x-4 w-full justify-center">
+                            <button type="button" id="takePhotoBtn" class="bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-600">
+                                Take Photo
+                            </button>
+                            <button type="button" id="retakePhotoBtn" class="hidden bg-gray-500 text-white py-2 px-4 rounded-md hover:bg-gray-600">
+                                Retake
+                            </button>
+                        </div>
+                    </div>
+                    <input type="hidden" id="visitorPhoto" name="visitorPhoto">
+                </div>
+
+                <div class="pt-4">
+                    <button type="submit" id="submitBtn" class="w-full bg-green-600 text-white py-2 px-4 rounded-md hover:bg-green-700 transition duration-300">
+                        Submit Request
+                    </button>
+                </div>
+            </form>
+
+            <div id="statusMessage" class="mt-4 p-3 rounded-md hidden"></div>
+        </div>
+
+        <footer class="text-center text-gray-500 text-sm mt-8">
+            &copy; 2025 Panchsheel Enclave Security System
+        </footer>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', async () => {
+            // Populate flat numbers
+            const flatSelect = document.getElementById('flatNumber');
+            try {
+                const response = await fetch('/api/flats');
+                if (response.ok) {
+                    const flats = await response.json();
+                    flats.forEach(flat => {
+                        const option = document.createElement('option');
+                        option.value = flat;
+                        option.textContent = flat;
+                        flatSelect.appendChild(option);
+                    });
+                }
+            } catch (error) {
+                console.error('Error loading flat numbers:', error);
+
+                // Fallback hardcoded flats in case API fails
+                const fallbackFlats = ["101", "102", "103", "201", "202", "203", "301", "302", "303"];
+                fallbackFlats.forEach(flat => {
+                    const option = document.createElement('option');
+                    option.value = flat;
+                    option.textContent = flat;
+                    flatSelect.appendChild(option);
+                });
+            }
+
+            // Camera functionality
+            const cameraElement = document.getElementById('camera');
+            const photoCanvas = document.getElementById('photoCanvas');
+            const takePhotoBtn = document.getElementById('takePhotoBtn');
+            const retakePhotoBtn = document.getElementById('retakePhotoBtn');
+            const visitorPhoto = document.getElementById('visitorPhoto');
+            let stream;
+
+            // Start camera
+            async function startCamera() {
+                try {
+                    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
+                    cameraElement.srcObject = stream;
+                } catch (error) {
+                    console.error('Error accessing camera:', error);
+                    document.getElementById('cameraContainer').innerHTML = '<div class="w-full h-full flex items-center justify-center text-red-500">Camera access denied or not available</div>';
+                }
+            }
+
+            // Capture photo
+            takePhotoBtn.addEventListener('click', () => {
+                const context = photoCanvas.getContext('2d');
+                photoCanvas.width = cameraElement.videoWidth;
+                photoCanvas.height = cameraElement.videoHeight;
+                context.drawImage(cameraElement, 0, 0, photoCanvas.width, photoCanvas.height);
+
+                // Convert canvas to data URL
+                const photoDataUrl = photoCanvas.toDataURL('image/jpeg');
+                visitorPhoto.value = photoDataUrl;
+
+                // Show the captured photo and retake button
+                cameraElement.classList.add('hidden');
+                photoCanvas.classList.remove('hidden');
+                takePhotoBtn.classList.add('hidden');
+                retakePhotoBtn.classList.remove('hidden');
+            });
+
+            // Retake photo
+            retakePhotoBtn.addEventListener('click', () => {
+                photoCanvas.classList.add('hidden');
+                cameraElement.classList.remove('hidden');
+                takePhotoBtn.classList.remove('hidden');
+                retakePhotoBtn.classList.add('hidden');
+                visitorPhoto.value = '';
+            });
+
+            // Handle form submission
+            const form = document.getElementById('visitorForm');
+            const statusMessage = document.getElementById('statusMessage');
+            const submitBtn = document.getElementById('submitBtn');
+
+            form.addEventListener('submit', async (e) => {
+                e.preventDefault();
+
+                if (!visitorPhoto.value) {
+                    alert('Please take your photo before submitting.');
+                    return;
+                }
+
+                // Show loading state
+                submitBtn.disabled = true;
+                submitBtn.textContent = 'Submitting...';
+                statusMessage.textContent = 'Sending request to resident...';
+                statusMessage.classList.remove('hidden', 'bg-red-100', 'bg-green-100');
+                statusMessage.classList.add('bg-blue-100', 'text-blue-700');
+
+                try {
+                    const formData = new FormData(form);
+                    const response = await fetch('/api/visitor-request', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    const result = await response.json();
+
+                    // Reset form state
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = 'Submit Request';
+
+                    if (response.ok) {
+                        statusMessage.textContent = 'Request sent! Please wait for approval.';
+                        statusMessage.classList.remove('bg-blue-100', 'bg-red-100', 'text-blue-700', 'text-red-700');
+                        statusMessage.classList.add('bg-green-100', 'text-green-700');
+
+                        // Set up polling for response
+                        pollForResponse(result.requestId);
+                    } else {
+                        statusMessage.textContent = result.message || 'Error sending request. Please try again.';
+                        statusMessage.classList.remove('bg-blue-100', 'bg-green-100', 'text-blue-700', 'text-green-700');
+                        statusMessage.classList.add('bg-red-100', 'text-red-700');
+                    }
+                } catch (error) {
+                    console.error('Error:', error);
+                    statusMessage.textContent = 'Network error. Please try again.';
+                    statusMessage.classList.remove('bg-blue-100', 'bg-green-100', 'text-blue-700', 'text-green-700');
+                    statusMessage.classList.add('bg-red-100', 'text-red-700');
+
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = 'Submit Request';
+                }
+            });
+
+            // Poll for resident response
+            function pollForResponse(requestId) {
+                let attempts = 0;
+                const maxAttempts = 60; // 5 minutes (5s intervals)
+
+                const checkStatus = async () => {
+                    if (attempts >= maxAttempts) {
+                        statusMessage.textContent = 'No response from resident. Please contact security.';
+                        statusMessage.classList.remove('bg-blue-100', 'bg-green-100', 'text-blue-700', 'text-green-700');
+                        statusMessage.classList.add('bg-red-100', 'text-red-700');
+                        return;
+                    }
+
+                    try {
+                        const response = await fetch(`/api/check-status/${requestId}`);
+                        const result = await response.json();
+
+                        if (result.status === 'pending') {
+                            attempts++;
+                            setTimeout(checkStatus, 5000); // Check every 5 seconds
+                        } else if (result.status === 'approved') {
+                            statusMessage.textContent = 'Your visit has been approved! Generating gatepass...';
+                            statusMessage.classList.remove('bg-blue-100', 'bg-red-100', 'text-blue-700', 'text-red-700');
+                            statusMessage.classList.add('bg-green-100', 'text-green-700');
+
+                            // Redirect to gatepass page
+                            window.location.href = `/frontend/gatepass.html?id=${requestId}`;
+                        } else if (result.status === 'rejected') {
+                            statusMessage.textContent = 'Sorry, your visit request has been rejected.';
+                            statusMessage.classList.remove('bg-blue-100', 'bg-green-100', 'text-blue-700', 'text-green-700');
+                            statusMessage.classList.add('bg-red-100', 'text-red-700');
+                        }
+                    } catch (error) {
+                        console.error('Error checking status:', error);
+                        attempts++;
+                        setTimeout(checkStatus, 5000); // Try again after error
+                    }
+                };
+
+                // Start polling
+                setTimeout(checkStatus, 5000);
+            }
+
+            // Initialize camera
+            startCamera();
+        });
+    </script>
+</body>
+</html>
