@@ -11,7 +11,7 @@ services:
       - key: NODE_ENV
         value: production
       - key: PORT
-        value: 10000  # Render assigns its own port
+        value: 10000
       - key: ADMIN_USERNAME
         value: panchadmin
       - key: ADMIN_PASSWORD
@@ -19,18 +19,4 @@ services:
     disk:
       name: data
       mountPath: /opt/render/project/data
-      sizeGB: 1  # Free tier limit
-
-  # Frontend static site (Optional)
-  - type: web
-    name: visitor-management-frontend
-    env: static
-    buildCommand: npm install && npm run build
-    staticPublishPath: ./dist
-    pullRequestPreviewsEnabled: false
-    envVars:
-      - key: VITE_API_URL
-        fromService:
-          name: visitor-management-api
-          type: web
-          envVarKey: RENDER_EXTERNAL_URL
+      sizeGB: 1
