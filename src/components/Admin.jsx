@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { Navigate } from 'react-router-dom';
 
+// Import QRCode component with the proper named export syntax
+import { QRCodeSVG as QRCode } from 'qrcode.react';
+
 const Admin = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [username, setUsername] = useState('');
@@ -178,10 +181,12 @@ const Admin = () => {
             ) : qrCode ? (
               <div className="flex flex-col items-center space-y-4">
                 <div className="bg-white p-4 rounded-lg border border-gray-200">
-                  <img
-                    src={`data:image/png;base64,${qrCode}`}
-                    alt="WhatsApp QR Code"
-                    className="w-64 h-64"
+                  <QRCode
+                    value={qrCode}
+                    size={256}
+                    level="H"
+                    includeMargin={true}
+                    renderAs="svg"
                   />
                 </div>
                 <p className="text-gray-600 text-sm text-center max-w-md">
