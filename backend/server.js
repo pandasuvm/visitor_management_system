@@ -175,8 +175,7 @@ app.post('/api/visitor-request', upload.single('visitorPhoto'), async (req, res)
         const message = `🏢 *Visitor Request Received* \n\n` +
                        `👤 *Name:* ${visitorName}\n` +
                        `🏠 *Flat:* ${flatNumber}\n` +
-                       `📝 *Purpose:* ${purpose}\n\n` +
-                       `Simply reply with *YES* to approve or *NO* to deny.`;
+                       `📝 *Purpose:* ${purpose}`;
 
         // Format phone number with @ for WhatsApp syntax
         const formattedPhone = `${residentPhone}@c.us`;
@@ -197,7 +196,7 @@ app.post('/api/visitor-request', upload.single('visitorPhoto'), async (req, res)
         // Add a small delay to ensure file is properly saved
         await new Promise(resolve => setTimeout(resolve, 2000));
 
-        // Then send the visitor's photo - fix the path to avoid duplication
+        // Then send the visitor's photo
         const photoPath = req.file.path;
         if (fs.existsSync(photoPath)) {
           console.log(`Sending visitor selfie from: ${photoPath}`);
@@ -206,6 +205,23 @@ app.post('/api/visitor-request', upload.single('visitorPhoto'), async (req, res)
           const mediaFile = MessageMedia.fromFilePath(photoPath);
           await whatsappClient.sendMessage(formattedPhone, mediaFile, { caption: captionText });
           console.log('Visitor selfie sent successfully');
+
+          // Now send a poll for easier response
+          try {
+            const poll = {
+              title: 'Do you approve this visitor?',
+              options: ['✅ Yes, Allow Entry', '❌ No, Deny Entry'],
+              // Set Allow Entry as the first option (index 0)
+              multipleAnswers: false
+            };
+
+            await whatsappClient.sendMessage(formattedPhone, new Poll(poll.title, poll.options, { allowMultipleAnswers: poll.multipleAnswers }));
+            console.log('Visitor approval poll sent successfully');
+          } catch (pollError) {
+            console.error('Failed to send poll, sending text-only instructions instead:', pollError);
+            // Send text-only instructions when poll fails
+            await whatsappClient.sendMessage(formattedPhone, 'Please reply with *YES* to approve or *NO* to deny this visitor request.');
+          }
         } else {
           console.log(`Photo file not found at path: ${photoPath}`);
 
@@ -220,8 +236,39 @@ app.post('/api/visitor-request', upload.single('visitorPhoto'), async (req, res)
             const mediaFile = MessageMedia.fromFilePath(altPath);
             await whatsappClient.sendMessage(formattedPhone, mediaFile, { caption: captionText });
             console.log('Visitor selfie sent successfully using alternate path');
+
+            // Send poll after photo is sent
+            try {
+              const poll = {
+                title: 'Do you approve this visitor?',
+                options: ['✅ Yes, Allow Entry', '❌ No, Deny Entry'],
+                multipleAnswers: false
+              };
+
+              await whatsappClient.sendMessage(formattedPhone, new Poll(poll.title, poll.options, { allowMultipleAnswers: poll.multipleAnswers }));
+              console.log('Visitor approval poll sent successfully');
+            } catch (pollError) {
+              console.error('Failed to send poll, sending text-only instructions instead:', pollError);
+              // Send text-only instructions when poll fails
+              await whatsappClient.sendMessage(formattedPhone, 'Please reply with *YES* to approve or *NO* to deny this visitor request.');
+            }
           } else {
             console.log(`Photo not found at alternate path either`);
+            // Send poll even without photo
+            try {
+              const poll = {
+                title: 'Do you approve this visitor?',
+                options: ['✅ Yes, Allow Entry', '❌ No, Deny Entry'],
+                multipleAnswers: false
+              };
+
+              await whatsappClient.sendMessage(formattedPhone, new Poll(poll.title, poll.options, { allowMultipleAnswers: poll.multipleAnswers }));
+              console.log('Visitor approval poll sent successfully');
+            } catch (pollError) {
+              console.error('Failed to send poll, sending text-only instructions instead:', pollError);
+              // Send text-only instructions when poll fails
+              await whatsappClient.sendMessage(formattedPhone, 'Please reply with *YES* to approve or *NO* to deny this visitor request.');
+            }
           }
         }
 
@@ -328,6 +375,47 @@ app.get('/api/admin/visitor-records', (req, res) => {
   } catch (error) {
     console.error('Error getting visitor records:', error);
     res.status(500).json({ message: 'Error fetching visitor records' });
+  }
+});
+
+// Get flat mappings
+app.get('/api/admin/flat-mappings', (req, res) => {
+  try {
+    const flatMappingPath = join(__dirname, '../data/flatMapping.json');
+    if (!fs.existsSync(flatMappingPath)) {
+      return res.status(404).json({ message: 'Flat mapping file not found' });
+    }
+
+    const flatMappings = JSON.parse(fs.readFileSync(flatMappingPath, 'utf8'));
+    res.json(flatMappings);
+  } catch (error) {
+    console.error('Error getting flat mappings:', error);
+    res.status(500).json({ message: 'Error fetching flat mappings' });
+  }
+});
+
+// Update flat mappings
+app.post('/api/admin/flat-mappings', express.json(), (req, res) => {
+  try {
+    const flatMappingPath = join(__dirname, '../data/flatMapping.json');
+    const updatedMappings = req.body;
+
+    // Validate the input
+    if (!updatedMappings || typeof updatedMappings !== 'object') {
+      return res.status(400).json({ message: 'Invalid flat mapping data' });
+    }
+
+    // Save the updated mappings
+    fs.writeFileSync(flatMappingPath, JSON.stringify(updatedMappings, null, 2));
+
+    // Also update the backend copy for the bot
+    const backendFlatMappingPath = join(__dirname, './flatMapping.json');
+    fs.writeFileSync(backendFlatMappingPath, JSON.stringify(updatedMappings, null, 2));
+
+    res.json({ message: 'Flat mappings updated successfully' });
+  } catch (error) {
+    console.error('Error updating flat mappings:', error);
+    res.status(500).json({ message: 'Error updating flat mappings' });
   }
 });
 
