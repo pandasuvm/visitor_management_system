@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Navigate } from 'react-router-dom';
 
 // Import QRCode component with the proper named export syntax
@@ -13,6 +13,19 @@ const Admin = () => {
   const [visitorRecords, setVisitorRecords] = useState([]);
   const [loading, setLoading] = useState(false);
   const [loadingRecords, setLoadingRecords] = useState(false);
+
+  // New states for the enhanced QR code system
+  const [whatsappStatus, setWhatsappStatus] = useState({
+    state: 'unknown',
+    lastUpdated: null,
+    connectionAttempts: 0,
+    qrRefreshCount: 0
+  });
+  const [whatsappReady, setWhatsappReady] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
+  const [qrError, setQrError] = useState('');
+  const [qrLastChecked, setQrLastChecked] = useState(null);
 
   // New states for flat management
   const [flatMappings, setFlatMappings] = useState({});
@@ -33,38 +46,44 @@ const Admin = () => {
   // API base URL from environment variables
   const API_URL = import.meta.env.VITE_API_URL || '';
 
-  // Check if user is already authenticated (from sessionStorage)
-  useEffect(() => {
-    const auth = sessionStorage.getItem('adminAuthenticated');
-    if (auth === 'true') {
-      setIsAuthenticated(true);
-      // Fetch QR code and visitor records when authenticated
-      fetchQrCode();
-      fetchVisitorRecords();
-      fetchFlatMappings();
-    }
-  }, []);
-
-  // Fetch WhatsApp QR code
-  const fetchQrCode = async () => {
+  // Define all fetch functions before using them in useEffect
+  
+  // Enhanced Fetch WhatsApp QR code with status information
+  const fetchQrCode = useCallback(async () => {
     try {
       setLoading(true);
+      setQrError('');
       const response = await fetch('/api/admin/whatsapp-qr');
+      const data = await response.json();
+
       if (response.ok) {
-        const data = await response.json();
-        setQrCode(data.qrCode);
+        if (data.qrCode) {
+          setQrCode(data.qrCode);
+        } else {
+          setQrCode('');
+        }
+
+        // Update WhatsApp status if available
+        if (data.status) {
+          setWhatsappStatus(data.status);
+          setWhatsappReady(data.isReady || false);
+        }
+
+        setQrLastChecked(new Date());
       } else {
-        console.error('Failed to fetch QR code');
+        console.error('Failed to fetch QR code:', data.message);
+        setQrError(data.message || 'Failed to fetch QR code');
       }
     } catch (error) {
       console.error('Error fetching QR code:', error);
+      setQrError('Network error while fetching QR code');
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   // Fetch visitor records
-  const fetchVisitorRecords = async () => {
+  const fetchVisitorRecords = useCallback(async () => {
     try {
       setLoadingRecords(true);
       const response = await fetch('/api/admin/visitor-records');
@@ -79,10 +98,10 @@ const Admin = () => {
     } finally {
       setLoadingRecords(false);
     }
-  };
+  }, []);
 
   // Fetch flat mappings
-  const fetchFlatMappings = async () => {
+  const fetchFlatMappings = useCallback(async () => {
     try {
       setLoadingFlats(true);
       const response = await fetch('/api/admin/flat-mappings');
@@ -99,7 +118,37 @@ const Admin = () => {
     } finally {
       setLoadingFlats(false);
     }
-  };
+  }, []);
+
+  // Check if user is already authenticated (from sessionStorage)
+  useEffect(() => {
+    const auth = sessionStorage.getItem('adminAuthenticated');
+    if (auth === 'true') {
+      setIsAuthenticated(true);
+      // Fetch QR code and visitor records when authenticated
+      fetchQrCode();
+      fetchVisitorRecords();
+      fetchFlatMappings();
+    }
+  }, [fetchQrCode, fetchVisitorRecords, fetchFlatMappings]);
+
+  // Effect for auto-refreshing QR code
+  useEffect(() => {
+    let intervalId;
+
+    if (autoRefresh && isAuthenticated) {
+      // Auto-refresh every 15 seconds if enabled
+      intervalId = setInterval(() => {
+        fetchQrCode();
+      }, 15000);
+    }
+
+    return () => {
+      if (intervalId) {
+        clearInterval(intervalId);
+      }
+    };
+  }, [autoRefresh, isAuthenticated]);
 
   // Handle login form submission
   const handleLogin = (e) => {
@@ -187,9 +236,95 @@ const Admin = () => {
     setFlatMappings({ ...flatMappings, [flatNumber]: value });
   };
 
-  // Format date for display
-  const formatDate = (dateString) => {
-    return new Date(dateString).toLocaleString();
+  // Handle manual QR code refresh
+  const handleQrRefresh = () => {
+    fetchQrCode();
+  };
+
+  // Force WhatsApp reconnection
+  const handleReconnectWhatsApp = async () => {
+    try {
+      setReconnecting(true);
+      setQrError('');
+
+      const response = await fetch('/api/admin/whatsapp-reconnect', {
+        method: 'POST',
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        // Update status from response
+        if (data.status) {
+          setWhatsappStatus(data.status);
+        }
+
+        // Set auto-refresh to catch the QR code when it's ready
+        setAutoRefresh(true);
+
+        // Fetch the status immediately to start polling
+        setTimeout(fetchQrCode, 2000);
+      } else {
+        setQrError(data.message || 'Failed to reconnect WhatsApp');
+      }
+    } catch (error) {
+      console.error('Error reconnecting WhatsApp:', error);
+      setQrError('Network error while attempting to reconnect');
+    } finally {
+      setReconnecting(false);
+    }
+  };
+
+  // Format date for easier reading
+  const formatTimeAgo = (dateString) => {
+    if (!dateString) return 'N/A';
+
+    const date = new Date(dateString);
+    const now = new Date();
+    const diffMs = now - date;
+    const diffSec = Math.round(diffMs / 1000);
+    const diffMin = Math.round(diffSec / 60);
+    const diffHr = Math.round(diffMin / 60);
+
+    if (diffSec < 60) return `${diffSec} seconds ago`;
+    if (diffMin < 60) return `${diffMin} minutes ago`;
+    if (diffHr < 24) return `${diffHr} hours ago`;
+    return date.toLocaleString();
+  };
+
+  // Get the appropriate status indicator color
+  const getStatusColor = () => {
+    switch (whatsappStatus.state) {
+      case 'authenticated':
+        return 'bg-green-500';
+      case 'qr-ready':
+        return 'bg-blue-500';
+      case 'initializing':
+        return 'bg-yellow-500';
+      case 'disconnected':
+      case 'failed':
+        return 'bg-red-500';
+      default:
+        return 'bg-gray-500';
+    }
+  };
+
+  // Get status text for display
+  const getStatusText = () => {
+    switch (whatsappStatus.state) {
+      case 'authenticated':
+        return 'Connected';
+      case 'qr-ready':
+        return 'QR Code Ready - Scan Now!';
+      case 'initializing':
+        return 'Initializing...';
+      case 'disconnected':
+        return 'Disconnected';
+      case 'failed':
+        return 'Connection Failed';
+      default:
+        return 'Unknown Status';
+    }
   };
 
   // If not authenticated, show login form
@@ -308,47 +443,221 @@ const Admin = () => {
       <main className="max-w-7xl mx-auto pt-28 pb-6 px-4 sm:px-6 lg:px-8">
         {/* WhatsApp QR Code Tab */}
         {activeTab === 'qr' && (
-          <div className="bg-white shadow rounded-lg p-4">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-lg font-semibold text-gray-800">WhatsApp Bot QR Code</h2>
-              <button
-                onClick={fetchQrCode}
-                className="px-2 py-1 bg-indigo-100 text-indigo-700 rounded-md text-sm hover:bg-indigo-200"
-              >
-                Refresh
-              </button>
+          <div className="bg-white shadow rounded-lg overflow-hidden">
+            <div className="border-b border-gray-200">
+              <div className="flex justify-between items-center p-4">
+                <div className="flex items-center space-x-2">
+                  <h2 className="text-lg font-semibold text-gray-800">WhatsApp Bot Connection</h2>
+                  <div className={`h-3 w-3 rounded-full ${getStatusColor()}`}></div>
+                  <span className="text-sm text-gray-600">{getStatusText()}</span>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <div className="flex items-center">
+                    <label className="switch mr-2 inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={autoRefresh}
+                        onChange={() => setAutoRefresh(!autoRefresh)}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-gray-200 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-500"></div>
+                      <span className="ml-2 text-sm text-gray-600">Auto-Refresh</span>
+                    </label>
+                  </div>
+                  <button
+                    onClick={fetchQrCode}
+                    disabled={loading}
+                    className="px-3 py-1 bg-indigo-100 text-indigo-700 rounded-md text-sm hover:bg-indigo-200 flex items-center"
+                  >
+                    {loading ? 'Refreshing...' : 'Refresh'}
+                  </button>
+                </div>
+              </div>
             </div>
 
-            {loading ? (
-              <div className="flex justify-center p-4">
-                <div className="animate-spin rounded-full h-10 w-10 border-t-2 border-b-2 border-indigo-500"></div>
-              </div>
-            ) : qrCode ? (
-              <div className="flex flex-col items-center">
-                <div className="bg-white p-2 rounded-lg border border-gray-200">
-                  <QRCode
-                    value={qrCode}
-                    size={200}
-                    level="H"
-                    includeMargin={true}
-                    renderAs="svg"
-                  />
+            <div className="p-4">
+              {qrError && (
+                <div className="mb-4 p-3 bg-red-100 border border-red-200 text-red-700 rounded-lg text-sm">
+                  {qrError}
                 </div>
-                <p className="mt-2 text-gray-600 text-sm text-center">
-                  Scan with WhatsApp to authenticate the bot
-                </p>
+              )}
+
+              <div className="flex flex-col md:flex-row md:space-x-4">
+                {/* QR Code Display Panel */}
+                <div className="flex-1">
+                  <div className="rounded-lg border border-gray-200 p-4">
+                    {loading ? (
+                      <div className="flex justify-center p-6">
+                        <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-indigo-500"></div>
+                      </div>
+                    ) : whatsappStatus.state === 'authenticated' ? (
+                      <div className="flex flex-col items-center justify-center p-6 text-center">
+                        <div className="bg-green-100 rounded-full p-3 mb-3">
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                          </svg>
+                        </div>
+                        <h3 className="text-lg font-medium text-gray-900">WhatsApp Connected</h3>
+                        <p className="text-sm text-gray-600 mt-1">Your WhatsApp bot is authenticated and ready to send notifications</p>
+                        <button
+                          onClick={handleReconnectWhatsApp}
+                          disabled={reconnecting}
+                          className="mt-4 px-4 py-2 bg-gray-100 text-gray-700 rounded-md text-sm hover:bg-gray-200"
+                        >
+                          {reconnecting ? 'Reconnecting...' : 'Reconnect WhatsApp'}
+                        </button>
+                      </div>
+                    ) : qrCode ? (
+                      <div className="flex flex-col items-center p-6 text-center">
+                        <div className="bg-white p-2 rounded-lg border-2 border-indigo-300 shadow-lg mb-3">
+                          <QRCode
+                            value={qrCode}
+                            size={260}
+                            level="H"
+                            includeMargin={true}
+                            renderAs="svg"
+                            bgColor="#FFFFFF"
+                            fgColor="#000000"
+                          />
+                        </div>
+                        <h3 className="text-md font-medium text-gray-900">Scan with WhatsApp</h3>
+                        <p className="text-sm text-gray-600 mt-1">
+                          Open WhatsApp on your phone, tap Menu or Settings and select WhatsApp Web
+                        </p>
+                        {autoRefresh && (
+                          <p className="text-xs text-indigo-600 mt-3">
+                            QR code will refresh automatically
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center justify-center p-6 text-center">
+                        <div className="bg-yellow-100 rounded-full p-3 mb-3">
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12 text-yellow-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                        </div>
+                        <h3 className="text-lg font-medium text-gray-900">No QR Code Available</h3>
+                        <p className="text-sm text-gray-600 mt-1">
+                          WhatsApp may already be authenticated or is initializing
+                        </p>
+                        <div className="flex space-x-3 mt-4">
+                          <button
+                            onClick={fetchQrCode}
+                            disabled={loading}
+                            className="px-4 py-2 bg-indigo-500 text-white rounded-md hover:bg-indigo-600 text-sm"
+                          >
+                            Check for QR Code
+                          </button>
+                          <button
+                            onClick={handleReconnectWhatsApp}
+                            disabled={reconnecting}
+                            className="px-4 py-2 bg-gray-100 text-gray-700 rounded-md text-sm hover:bg-gray-200"
+                          >
+                            {reconnecting ? 'Reconnecting...' : 'Force Reconnection'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Connection Status Panel */}
+                <div className="flex-1 mt-4 md:mt-0">
+                  <div className="rounded-lg border border-gray-200 p-4 h-full">
+                    <h3 className="font-medium text-gray-800 mb-3">Connection Status</h3>
+                    <div className="space-y-3">
+                      <div>
+                        <div className="text-sm font-medium text-gray-500">Status</div>
+                        <div className="flex items-center mt-1">
+                          <div className={`h-3 w-3 rounded-full ${getStatusColor()} mr-2`}></div>
+                          <div className="font-medium">{getStatusText()}</div>
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="text-sm font-medium text-gray-500">Last Update</div>
+                        <div className="mt-1">
+                          {whatsappStatus.lastUpdated ? formatTimeAgo(whatsappStatus.lastUpdated) : 'N/A'}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="text-sm font-medium text-gray-500">Connection Attempts</div>
+                        <div className="mt-1">{whatsappStatus.connectionAttempts || 0}</div>
+                      </div>
+
+                      <div>
+                        <div className="text-sm font-medium text-gray-500">QR Code Refreshes</div>
+                        <div className="mt-1">{whatsappStatus.qrRefreshCount || 0}</div>
+                      </div>
+
+                      <div>
+                        <div className="text-sm font-medium text-gray-500">Last Checked</div>
+                        <div className="mt-1">
+                          {qrLastChecked ? formatTimeAgo(qrLastChecked) : 'Not yet checked'}
+                        </div>
+                      </div>
+
+                      {whatsappStatus.error && (
+                        <div>
+                          <div className="text-sm font-medium text-red-500">Error</div>
+                          <div className="mt-1 text-sm text-red-600">{whatsappStatus.error}</div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="mt-5">
+                      <h4 className="font-medium text-gray-800 mb-2">Troubleshooting</h4>
+                      <ul className="list-disc pl-5 text-sm text-gray-600 space-y-1">
+                        <li>Make sure you have a stable internet connection</li>
+                        <li>Ensure your phone has an active WhatsApp account</li>
+                        <li>Scan the QR code quickly before it expires</li>
+                        <li>If issues persist, try the "Force Reconnection" button</li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
               </div>
-            ) : (
-              <div className="text-center p-4">
-                <p className="text-gray-500 text-sm">No QR code available. The bot may already be authenticated.</p>
+
+              {/* Manual control for QR code refresh */}
+              <div className="mt-4">
                 <button
-                  onClick={fetchQrCode}
-                  className="mt-2 px-4 py-2 bg-indigo-500 text-white rounded-md hover:bg-indigo-600 focus:outline-none text-sm"
+                  onClick={handleQrRefresh}
+                  className="px-3 py-1 bg-indigo-500 text-white rounded-md text-sm hover:bg-indigo-600 focus:outline-none"
                 >
-                  Check for QR Code
+                  Refresh QR Code
                 </button>
               </div>
-            )}
+
+              {/* Auto-refresh toggle */}
+              <div className="mt-4 flex items-center">
+                <input
+                  type="checkbox"
+                  id="autoRefresh"
+                  checked={autoRefresh}
+                  onChange={(e) => setAutoRefresh(e.target.checked)}
+                  className="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500"
+                />
+                <label htmlFor="autoRefresh" className="ml-2 block text-sm text-gray-700">
+                  Auto-refresh QR code
+                </label>
+              </div>
+
+              {/* Reconnecting status */}
+              {reconnecting && (
+                <div className="mt-4 p-2 bg-yellow-100 text-yellow-800 rounded-md text-sm">
+                  Reconnecting to WhatsApp... Please wait.
+                </div>
+              )}
+
+              {/* QR code error message */}
+              {qrError && (
+                <div className="mt-4 p-2 bg-red-100 text-red-800 rounded-md text-sm">
+                  Error: {qrError}
+                </div>
+              )}
+            </div>
           </div>
         )}
 

@@ -89,17 +89,39 @@ if (!fs.existsSync(visitorDataPath)) {
   fs.writeFileSync(visitorDataPath, JSON.stringify({}, null, 2));
 }
 
+// Enhanced WhatsApp status tracking
+let whatsappStatus = {
+  state: 'initializing', // initializing, qr-ready, authenticated, failed, disconnected
+  lastUpdated: new Date().toISOString(),
+  qrRefreshCount: 0,
+  connectionAttempts: 0
+};
+
 // Initialize WhatsApp client
 let whatsappClient;
 let whatsappInitialized = false;
 (async () => {
   try {
     console.log('Initializing WhatsApp client with persistent auth...');
+    whatsappStatus.state = 'initializing';
+    whatsappStatus.lastUpdated = new Date().toISOString();
+    whatsappStatus.connectionAttempts += 1;
+
     whatsappClient = await initWhatsApp();
     whatsappInitialized = true;
+
+    // WhatsApp client is already initialized with event handlers in bot.js
+    // The events should be managed there and not here to avoid conflicts
     console.log('WhatsApp client initialized successfully');
+
+    // Update the status to reflect we're connected
+    whatsappStatus.state = 'authenticated';
+    whatsappStatus.lastUpdated = new Date().toISOString();
   } catch (error) {
     console.error('Failed to initialize WhatsApp client:', error);
+    whatsappStatus.state = 'failed';
+    whatsappStatus.lastUpdated = new Date().toISOString();
+    whatsappStatus.error = error.message;
   }
 })();
 
@@ -190,8 +212,8 @@ app.post('/api/visitor-request', upload.single('visitorPhoto'), async (req, res)
 
         console.log(`Added pending request for ${formattedPhone}: ${requestId} - ${visitorName}`);
 
-        // First send the text message
-        await whatsappClient.sendMessage(formattedPhone, message);
+        // First send the text message - Fix: Pass message as an object with text property
+        await whatsappClient.sendMessage(formattedPhone, { text: message });
 
         // Add a small delay to ensure file is properly saved
         await new Promise(resolve => setTimeout(resolve, 2000));
@@ -202,12 +224,18 @@ app.post('/api/visitor-request', upload.single('visitorPhoto'), async (req, res)
           console.log(`Sending visitor selfie from: ${photoPath}`);
           const captionText = `📸 Photo of visitor: ${visitorName}`;
 
-          const mediaFile = MessageMedia.fromFilePath(photoPath);
-          await whatsappClient.sendMessage(formattedPhone, mediaFile, { caption: captionText });
-          console.log('Visitor selfie sent successfully');
-
-          // Now send a poll for easier response
           try {
+            // Read file as buffer for Baileys
+            const imageBuffer = fs.readFileSync(photoPath);
+            // Send image using Baileys API
+            await whatsappClient.sendMessage(formattedPhone, {
+              image: imageBuffer,
+              caption: captionText,
+              mimetype: 'image/jpeg' // Explicitly set mime type
+            });
+            console.log('Visitor selfie sent successfully');
+
+            // Now send a poll for easier response
             const poll = {
               title: 'Do you approve this visitor?',
               options: ['✅ Yes, Allow Entry', '❌ No, Deny Entry'],
@@ -215,12 +243,18 @@ app.post('/api/visitor-request', upload.single('visitorPhoto'), async (req, res)
               multipleAnswers: false
             };
 
-            await whatsappClient.sendMessage(formattedPhone, new Poll(poll.title, poll.options, { allowMultipleAnswers: poll.multipleAnswers }));
+            await whatsappClient.sendMessage(formattedPhone, {
+              poll: {
+                name: poll.title,
+                options: poll.options,
+                selectableCount: poll.multipleAnswers ? poll.options.length : 1
+              }
+            });
             console.log('Visitor approval poll sent successfully');
           } catch (pollError) {
             console.error('Failed to send poll, sending text-only instructions instead:', pollError);
             // Send text-only instructions when poll fails
-            await whatsappClient.sendMessage(formattedPhone, 'Please reply with *YES* to approve or *NO* to deny this visitor request.');
+            await whatsappClient.sendMessage(formattedPhone, { text: 'Please reply with *YES* to approve or *NO* to deny this visitor request.' });
           }
         } else {
           console.log(`Photo file not found at path: ${photoPath}`);
@@ -250,7 +284,7 @@ app.post('/api/visitor-request', upload.single('visitorPhoto'), async (req, res)
             } catch (pollError) {
               console.error('Failed to send poll, sending text-only instructions instead:', pollError);
               // Send text-only instructions when poll fails
-              await whatsappClient.sendMessage(formattedPhone, 'Please reply with *YES* to approve or *NO* to deny this visitor request.');
+              await whatsappClient.sendMessage(formattedPhone, { text: 'Please reply with *YES* to approve or *NO* to deny this visitor request.' });
             }
           } else {
             console.log(`Photo not found at alternate path either`);
@@ -267,7 +301,7 @@ app.post('/api/visitor-request', upload.single('visitorPhoto'), async (req, res)
             } catch (pollError) {
               console.error('Failed to send poll, sending text-only instructions instead:', pollError);
               // Send text-only instructions when poll fails
-              await whatsappClient.sendMessage(formattedPhone, 'Please reply with *YES* to approve or *NO* to deny this visitor request.');
+              await whatsappClient.sendMessage(formattedPhone, { text: 'Please reply with *YES* to approve or *NO* to deny this visitor request.' });
             }
           }
         }
@@ -340,23 +374,6 @@ app.get('/api/gatepass/:requestId', (req, res) => {
 
 // Admin API Routes
 
-// Get WhatsApp QR code
-app.get('/api/admin/whatsapp-qr', async (req, res) => {
-  try {
-    // Check if QR code exists
-    const qrFilePath = join(__dirname, '../public/qr/latest-qr.txt');
-    if (fs.existsSync(qrFilePath)) {
-      const qrCode = fs.readFileSync(qrFilePath, 'utf8');
-      res.json({ qrCode });
-    } else {
-      res.status(404).json({ message: 'QR code not available. The bot may already be authenticated.' });
-    }
-  } catch (error) {
-    console.error('Error getting WhatsApp QR code:', error);
-    res.status(500).json({ message: 'Error getting WhatsApp QR code' });
-  }
-});
-
 // Get visitor records
 app.get('/api/admin/visitor-records', (req, res) => {
   try {
@@ -419,20 +436,104 @@ app.post('/api/admin/flat-mappings', express.json(), (req, res) => {
   }
 });
 
-// Serve static files from the React app in production
-if (process.env.NODE_ENV === 'production') {
-  const buildPath = join(__dirname, '../dist');
-  app.use(express.static(buildPath));
+// Get WhatsApp connection status
+app.get('/api/admin/whatsapp-status', (req, res) => {
+  try {
+    // Return the current WhatsApp connection status
+    res.json({
+      status: whatsappStatus,
+      isReady: whatsappInitialized && whatsappClient && whatsappClient.isReady
+    });
+  } catch (error) {
+    console.error('Error getting WhatsApp status:', error);
+    res.status(500).json({ message: 'Error getting WhatsApp status' });
+  }
+});
 
-  app.get('*', (req, res) => {
-    res.sendFile(join(buildPath, 'index.html'));
-  });
-}
+// Enhanced WhatsApp QR code endpoint
+app.get('/api/admin/whatsapp-qr', async (req, res) => {
+  try {
+    // Check if QR code exists
+    const qrFilePath = join(__dirname, '../public/qr/latest-qr.txt');
+    if (fs.existsSync(qrFilePath)) {
+      const qrCode = fs.readFileSync(qrFilePath, 'utf8');
+      res.json({
+        qrCode,
+        status: whatsappStatus,
+        isReady: whatsappInitialized && whatsappClient && whatsappClient.isReady
+      });
+    } else {
+      res.json({
+        message: 'QR code not available. The bot may already be authenticated.',
+        status: whatsappStatus,
+        isReady: whatsappInitialized && whatsappClient && whatsappClient.isReady
+      });
+    }
+  } catch (error) {
+    console.error('Error getting WhatsApp QR code:', error);
+    res.status(500).json({ message: 'Error getting WhatsApp QR code' });
+  }
+});
 
-// Serve uploads directory
-app.use('/uploads', express.static(join(__dirname, '../uploads')));
+// Force reinitialization of WhatsApp connection
+app.post('/api/admin/whatsapp-reconnect', async (req, res) => {
+  try {
+    console.log('Manually reinitializing WhatsApp connection...');
+
+    whatsappStatus.state = 'initializing';
+    whatsappStatus.lastUpdated = new Date().toISOString();
+    whatsappStatus.connectionAttempts += 1;
+
+    // Clean up any existing QR codes
+    const qrFilePath = join(__dirname, '../public/qr/latest-qr.txt');
+    if (fs.existsSync(qrFilePath)) {
+      fs.unlinkSync(qrFilePath);
+    }
+
+    // Attempt to reinitialize the WhatsApp client
+    try {
+      // Reset the client
+      whatsappClient = null;
+      whatsappInitialized = false;
+
+      // Initialize a new client - all events are registered in bot.js
+      whatsappClient = await initWhatsApp();
+      whatsappInitialized = true;
+
+      // Update status to reflect we're likely authenticated or waiting for QR scan
+      if (fs.existsSync(qrFilePath)) {
+        whatsappStatus.state = 'qr-ready';
+        whatsappStatus.qrRefreshCount += 1;
+      } else {
+        // Likely already authenticated
+        whatsappStatus.state = 'authenticated';
+      }
+
+      whatsappStatus.lastUpdated = new Date().toISOString();
+
+      res.json({
+        message: 'WhatsApp reconnection initiated successfully',
+        status: whatsappStatus
+      });
+    } catch (error) {
+      console.error('Failed to reinitialize WhatsApp client:', error);
+      whatsappStatus.state = 'failed';
+      whatsappStatus.lastUpdated = new Date().toISOString();
+      whatsappStatus.error = error.message;
+
+      res.status(500).json({
+        message: 'Failed to reconnect WhatsApp',
+        status: whatsappStatus,
+        error: error.message
+      });
+    }
+  } catch (error) {
+    console.error('Error handling WhatsApp reconnect:', error);
+    res.status(500).json({ message: 'Server error handling reconnect request' });
+  }
+});
 
 // Start the server
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Server is running on port ${PORT}`);
 });
